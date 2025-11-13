@@ -115,7 +115,7 @@ void run_experiment_2(int num_copies, size_t chunk_size, int kernel_repeat) {
     float total_ms = 0.0f;
     cudaEventElapsedTime(&total_ms, start, end);
 
-    printf("copies: %d,\tkernel time: %f ms\n", num_copies, total_ms);
+    printf("copies: %d,\ttotal time: %f ms\n", num_copies, total_ms);
 
     // Cleanup
     for (int i = 0; i < num_copies; ++i) {
