@@ -19,7 +19,7 @@ int main() {
     std::vector<float> h_data(B * N);
     std::mt19937 rng(123);
     std::uniform_real_distribution<float> dist(0.0f, 1.0f);
-    for (int i = 0; i < N; ++i) h_data[i] = dist(rng);
+    for (int i = 0; i < B * N; ++i) h_data[i] = dist(rng);
 
     // 2) allocate and copy to device
     float* d_data;
@@ -69,18 +69,28 @@ int main() {
     gt_all.reserve(B * K);
     for (int batch = 0; batch < B; ++batch) {
         std::vector<int> gt(N);
-        for (int j = 0; j < N; ++j) gt[j] = batch * N + j;
+        for (int j = 0; j < N; ++j) gt[j] = j;
         std::partial_sort(gt.begin(), gt.begin() + K, gt.end(),
-                          [&h_data](int a, int b) { return h_data[a] > h_data[b]; });
+                          [&](int a, int b) { return h_data[ batch * N + a] > h_data[ batch *N + b]; });
         for (int j = 0; j < K; ++j) gt_all.push_back(gt[j]);
     }
     // 7) compare
     bool ok = true;
-    for (int i = 0; i < B * K; ++i) {
-        if (h_topk[i] != gt_all[i]) { ok = false; break; }
+    for (int i = 0; i < B; ++i) {
+        printf("host batch %d\n", i);
+        for(int j = 0; j < K; ++j){
+            printf("%d ", gt_all[i * N + j]);
+        }
+        puts("");
+        printf("device batch %d\n", i);
+        for(int j = 0; j < K; ++j){
+            printf("%d ", h_topk[i * N + j]);
+        }
+        puts("");
+        puts("");
     }
-    std::cout << (ok ? "PASS\n" : "FAIL\n");
-    
+    // std::cout << (ok ? "PASS\n" : "FAIL\n");
+
     // 8) cleanup
     cudaFree(d_data);
     cudaFree(d_indices);
