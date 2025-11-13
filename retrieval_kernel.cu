@@ -116,15 +116,37 @@ int main(){
     dim3 numThreads = {32};
     int num_block = (total_kv_len + 31) / 32;
     dim3 numBlocks = {(unsigned int)num_block};
+
+    retrieval_kernel<<<numBlocks, numThreads>>>(d_Q, d_K, d_score, d_block_table, d_batch_index, dim, B, total_kv_len);
+
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+
+    cudaEventRecord(start, 0);
     retrieval_kernel<<<numBlocks, numThreads>>>(d_Q, d_K, d_score, d_block_table, d_batch_index, dim, B, total_kv_len);
     cuda_check(cudaPeekAtLastError());
     cuda_check(cudaDeviceSynchronize());
+    cudaEventRecord(stop, 0);
+    cudaEventSynchronize(stop);
+    float milliseconds = 0;
+    cudaEventElapsedTime(&milliseconds, start, stop);
+    printf("Time spent on retrieval_kernel: %f ms\n", milliseconds);
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+
 
     float *h_score_gpu;
     h_score_gpu = (float*)malloc(total_kv_len * sizeof(float));
     cuda_check(cudaMemcpy(h_score_gpu, d_score, total_kv_len * sizeof(float), cudaMemcpyDeviceToHost));
 
     retrieval_host(h_Q, h_K, h_score, block_table, batch_index, dim, B, total_kv_len);
+
+    auto h_start = std::chrono::high_resolution_clock::now();
+    retrieval_host(h_Q, h_K, h_score, block_table, batch_index, dim, B, total_kv_len);
+    auto h_stop = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(h_stop - h_start);
+    printf("Time spent on retrieval_host: %ld ms\n", duration.count());
 
     float eps = 1e-3;
     for(int i = 0; i < total_kv_len; ++i){
