@@ -21,13 +21,15 @@ __global__ void retrieval_kernel(float *Q, float *K, float *score, int *block_ta
     // batch_index: [S], the mark specifying which batch current index belongs to and which Q current K[index] should be compared with.
     // dim: feature size
     int global_x = blockIdx.x * blockDim.x + threadIdx.x;
-    int k_index = block_table[global_x];
-    int batch_id = batch_index[global_x];
-    float s = 0.0f;
-    for(int i = 0; i < dim; ++i){
-        s += Q[batch_id * dim + i] * K[k_index * dim + i];
+    if(global_x < S){
+        int k_index = block_table[global_x];
+        int batch_id = batch_index[global_x];
+        float s = 0.0f;
+        for(int i = 0; i < dim; ++i){
+            s += Q[batch_id * dim + i] * K[k_index * dim + i];
+        }
+        score[global_x] = s;
     }
-    score[global_x] = s;
 }
 
 
@@ -55,7 +57,7 @@ void init_mat(float *mat, int sz){
 
 int main(){
     float *h_Q, *h_K;
-    int B = 3, dim = 8 * 128;
+    int B = 10, dim = 8 * 128;
     int N = 1000;
 
     h_Q = (float*)malloc(B * dim * sizeof(float));
@@ -70,7 +72,7 @@ int main(){
     int *kv_start_offsets ;
     kv_start_offsets = (int*)malloc((B+1) * sizeof(int));
     for(int i = 0; i < B; ++i){
-        h_kv_len[i] = B + i;
+        h_kv_len[i] = B * 5 + i;
         kv_start_offsets[i] = total_kv_len;
         total_kv_len += h_kv_len[i];
     }
@@ -81,15 +83,11 @@ int main(){
     int *block_table;
     block_table = (int*)malloc(total_kv_len * sizeof(int));
     for(int i = 0; i < total_kv_len; ++i){
-        block_table[i] = i;
+        block_table[i] = i * 5 % N;
     }
     int *batch_index;
     batch_index = (int*)malloc(total_kv_len * sizeof(int));
-    printf("sanity check\n");
-    for(int i = 0; i <= B; ++i){
-        printf("offset: %d\n", kv_start_offsets[i]);
-    }
-    printf("total_kv_len: %d\n", total_kv_len);
+
     for(int i = 0, j = 0; i < total_kv_len; ++i){
         if(i < kv_start_offsets[j+1] && i >= kv_start_offsets[j]){
             batch_index[i] = j;
@@ -98,26 +96,44 @@ int main(){
             ++j;
             batch_index[i] = j;
         }
-        printf("batch_index[%d] = %d\n", i, batch_index[i]);
     }
 
 
-    float *d_Q, *d_K;
+    float *d_Q, *d_K, *d_score;
     cuda_check(cudaMalloc(&d_Q, sizeof(float) * B * dim));
     cuda_check(cudaMalloc(&d_K, sizeof(float) * N * dim));
+    cuda_check(cudaMalloc(&d_score, sizeof(float) * total_kv_len));
     cuda_check(cudaMemcpy(d_Q, h_Q, sizeof(float) * B * dim, cudaMemcpyHostToDevice));
     cuda_check(cudaMemcpy(d_K, h_K, sizeof(float) * N * dim, cudaMemcpyHostToDevice));
+
     int *d_block_table, *d_batch_index;
     cuda_check(cudaMalloc(&d_block_table, sizeof(int) * total_kv_len));
     cuda_check(cudaMemcpy(d_block_table, block_table, sizeof(int) * total_kv_len, cudaMemcpyHostToDevice));
     cuda_check(cudaMalloc(&d_batch_index, sizeof(int) * total_kv_len));
-    cuda_check(cudaMemcpy(d_block_table, block_table, sizeof(int) * total_kv_len, cudaMemcpyHostToDevice));
+    cuda_check(cudaMemcpy(d_batch_index, batch_index, sizeof(int) * total_kv_len, cudaMemcpyHostToDevice));
 
 
     dim3 numThreads = {32};
     int num_block = (total_kv_len + 31) / 32;
     dim3 numBlocks = {(unsigned int)num_block};
     retrieval_kernel<<<numBlocks, numThreads>>>(d_Q, d_K, d_score, d_block_table, d_batch_index, dim, B, total_kv_len);
+    cuda_check(cudaPeekAtLastError());
+    cuda_check(cudaDeviceSynchronize());
+
+    float *h_score_gpu;
+    h_score_gpu = (float*)malloc(total_kv_len * sizeof(float));
+    cuda_check(cudaMemcpy(h_score_gpu, d_score, total_kv_len * sizeof(float), cudaMemcpyDeviceToHost));
+
+    retrieval_host(h_Q, h_K, h_score, block_table, batch_index, dim, B, total_kv_len);
+
+    float eps = 1e-3;
+    for(int i = 0; i < total_kv_len; ++i){
+        float diff = fabs(h_score[i] - h_score_gpu[i]);
+        printf("h %f, d %f\n", h_score[i], h_score_gpu[i]);
+        if(diff > eps){
+            printf("not ok\n");
+        }
+    }
 
     return 0;
 }
