@@ -6,9 +6,9 @@
 #include <iostream>
 
 // kernel to initialize indices [0..N)
-__global__ void init_indices(int* idx, int N) {
+__global__ void init_indices(int* idx, int total, int batch_size) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < N) idx[i] = i;
+    if (i < total) idx[i] = i % batch_size;
 }
 
 int main() {
@@ -36,7 +36,7 @@ int main() {
     // 3) init device indices
     const int TPB = 256;
     int blocks = (total + TPB - 1) / TPB;
-    init_indices<<<blocks, TPB>>>(d_indices, total);
+    init_indices<<<blocks, TPB>>>(d_indices, total, N);
     cudaDeviceSynchronize();
 
     // 4) run CUB segmented radix sort (one segment)
