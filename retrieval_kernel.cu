@@ -71,6 +71,7 @@ __global__ void retrieval_kernel_2(const float *__restrict__ Q, const float *__r
             if(local_x < i){
                 part_score[local_x] += part_score[local_x + i];
             }
+            __syncthreads();
         }
         score[global_x] = part_score[0];
     }
