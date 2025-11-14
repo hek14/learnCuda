@@ -11,8 +11,20 @@
 } \
 
 
-__global__ void extract_repre(float *key_cache, float *repre_cache, int *block_table, int block_size, int block_number){
-
+__global__ void extract_repre(const float *key_cache, float *repre_cache, const int *block_table, int block_size, int dim, int block_number) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < block_number) {
+        int block_id = block_table[idx];
+        const float* key_ptr = key_cache + block_id * block_size * dim;
+        float* repre_ptr = repre_cache + block_id * dim;
+        for (int d = 0; d < dim; ++d) {
+            float sum = 0.0f;
+            for (int j = 0; j < block_size; ++j) {
+                sum += key_ptr[j * dim + d];
+            }
+            repre_ptr[d] = sum / block_size;
+        }
+    }
 }
 
 
