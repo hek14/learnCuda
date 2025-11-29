@@ -81,7 +81,7 @@ __global__ void retrieval_kernel_2(const float *__restrict__ Q[], const float *_
     }
 }
 
-__global__ void retrieval_kernel_3(const float *__restrict__ Q[], const float *__restrict__ K, float *__restrict__ score, const int *__restrict__ block_table, const int *__restrict__ batch_index, int dim, int S){
+__global__ void retrieval_kernel_3(float **Q, const float *__restrict__ K, float *__restrict__ score, const int *__restrict__ block_table, const int *__restrict__ batch_index, int dim, int S){
     // Q: [batch, dim], the query tensors
     // K: [N, dim], the key tensors
     // score: [S], the result score values
