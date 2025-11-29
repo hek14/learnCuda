@@ -38,7 +38,7 @@ __global__ void retrieval_kernel(const float *__restrict__ Q, const float *__res
 }
 
 #define tile 8
-__global__ void retrieval_kernel_2(const float *__restrict__ Q, const float *__restrict__ K, float *__restrict__ score, const int *__restrict__ block_table, const int *__restrict__ batch_index, int dim, int S){
+__global__ void retrieval_kernel_2(const float *__restrict__ Q[], const float *__restrict__ K, float *__restrict__ score, const int *__restrict__ block_table, const int *__restrict__ batch_index, int dim, int S){
     // Q: [batch, dim], the query tensors
     // K: [N, dim], the key tensors
     // score: [S], the result score values
@@ -92,7 +92,7 @@ __global__ void retrieval_kernel_3(const float *__restrict__ Q[], const float *_
     int global_x = blockIdx.x;
     int local_x = threadIdx.x;
     if (global_x < S){
-        const float *q = Q + batch_index[global_x] * dim;
+        const float *q = Q[batch_index[global_x]];
         const float *k = K + block_table[global_x] * dim;
         int num_tiles = (dim + 4 * blockDim.x - 1) / (4 * blockDim.x);
         float sum = 0.0f;
