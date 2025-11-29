@@ -39,8 +39,13 @@ cuda_retrieval(query_list, repre_cache, q_table, repre_table, score)
 print("score: ", score)
 
 
-query = torch.stack(query_list)
-score_gt = (query[q_table] * repre_cache[repre_table]).sum(-1)
+def naive_retrieval():
+    query = torch.stack(query_list)
+    score_gt = (query[q_table] * repre_cache[repre_table]).sum(-1)
+    return score_gt
+
+score_gt = naive_retrieval()
+
 print("score_gt: ", score_gt)
 
 diff = (score - score_gt).abs()
