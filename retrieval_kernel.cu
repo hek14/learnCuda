@@ -1,4 +1,5 @@
 #include <cuda_runtime.h>
+#include <cub/cub.cuh>
 #include <stdio.h>
 #include <chrono>
 #include <random>
@@ -149,7 +150,7 @@ if (((T).options().dtype() != (expect_type))) { \
     throw std::runtime_error("mismatched tensor dtype"); \
 }
 
-void cuda_retrieval(const std::vector<torch::Tensor> &query_list, torch::Tensor repre_cache, torch::Tensor q_index, torch::Tensor repre_index, torch::Tensor score){
+void esa_retrieval(const std::vector<torch::Tensor> &query_list, torch::Tensor repre_cache, torch::Tensor q_index, torch::Tensor repre_index, torch::Tensor score){
     // query: a list of ptr
     // repre_cache: a ptr
     CHECK_TORCH_TENSOR_DTYPE(query_list[0], torch::kFloat32);
@@ -182,8 +183,28 @@ void cuda_retrieval(const std::vector<torch::Tensor> &query_list, torch::Tensor 
     cuda_check(cudaFree(Q_ptrs));
 }
 
+void esa_topk(torch::Tensor score, torch::Tensor index, torch::Tensor offsets, torch::Tensor score_out, torch::Tensor index_out, size_t K){
+    CHECK_TORCH_TENSOR_DTYPE(offsets, torch::kInt32);
+    void*  d_temp = nullptr;
+    size_t temp_bytes = 0;
+    size_t B = offsets.size(0) - 1;
+    size_t total = score.size(0);
+    cub::DeviceSegmentedRadixSort::SortPairsDescending(
+        d_temp, temp_bytes,
+        score.data_ptr<float>(),  score_out.data_ptr<float>(),
+        index.data_ptr<int>(), index_out.data_ptr<int>(),
+        total, B, offsets.data_ptr<int>(), offsets.data_ptr<int>() + 1);
+    cuda_check(cudaMalloc(&d_temp, temp_bytes));
+    cub::DeviceSegmentedRadixSort::SortPairsDescending(
+        d_temp, temp_bytes,
+        score.data_ptr<float>(),  score_out.data_ptr<float>(),
+        index.data_ptr<int>(), index_out.data_ptr<int>(),
+        total, B, offsets.data_ptr<int>(), offsets.data_ptr<int>() + 1);
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    TORCH_BINDING_COMMON_EXTENSION(cuda_retrieval)
+    TORCH_BINDING_COMMON_EXTENSION(esa_retrieval)
+    TORCH_BINDING_COMMON_EXTENSION(esa_topk)
 }
 
 // int main(){
