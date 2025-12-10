@@ -30,16 +30,17 @@ s = 10
 dim = 576
 N = 100
 query_list = []
+dtype = torch.float16
 for i in range(b):
-    query_list.append(torch.rand(dim, dtype=torch.float32).cuda())
+    query_list.append(torch.rand(dim, dtype=dtype).cuda())
 
 
-repre_cache = torch.randn(N, dim, dtype = torch.float32).cuda()
+repre_cache = torch.randn(N, dim, dtype = dtype).cuda()
 repre_table = torch.arange(0, s, dtype = torch.int32).cuda()
 q_table = torch.arange(0, s, dtype = torch.int32).cuda()
 q_table = q_table % b
-score = torch.zeros(s, dtype = torch.float32).cuda()
-score_sorted = torch.zeros(s, dtype = torch.float32).cuda()
+score = torch.zeros(s, dtype = dtype).cuda()
+score_sorted = torch.zeros(s, dtype = dtype).cuda()
 index = torch.arange(0, s, dtype=torch.int32).cuda()
 index_sorted = torch.arange(0, s, dtype=torch.int32).cuda()
 offsets = torch.arange(0, s, math.ceil(s / b), dtype=torch.int32).cuda()

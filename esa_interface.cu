@@ -1,9 +1,10 @@
-#include <cuda_runtime.h>
-#include <cub/cub.cuh>
 #include <stdio.h>
-#include <chrono>
-#include <random>
-
+#include <cuda_runtime.h>
+#include <cuda_bf16.h>
+#include <cuda_fp16.h>
+#include <cuda_runtime.h>
+#include <vector_types.h>
+#include <cub/cub.cuh>
 #include <torch/extension.h>
 #include <vector>
 #include <torch/types.h>
@@ -69,9 +70,40 @@ __global__ void retrieval_kernel(float **queries, const float *__restrict__ repr
         float sum = 0.0f;
         for(int i = 0; i < num_tiles; ++i){
             int tile_offset = i * (4 * blockDim.x);
-            if(tile_offset + local_x * 4 + 4 <= dim){
-                const float4 *q4 = reinterpret_cast<const float4*>(q + tile_offset + local_x * 4);
-                const float4 *k4 = reinterpret_cast<const float4*>(k + tile_offset + local_x * 4);
+            int idx = tile_offset + local_x * 4;
+            if(idx + 4 <= dim){
+                const float4 *q4 = reinterpret_cast<const float4*>(q + idx);
+                const float4 *k4 = reinterpret_cast<const float4*>(k + idx);
+                sum += q4->x * k4->x + q4->y * k4->y + q4->z * k4->z + q4->w * k4->w;
+            }
+        }
+        local_score[local_x] = sum;
+        __syncthreads();
+        for(int i = blockDim.x / 2; i; i = i / 2){
+            if(local_x < i){
+                local_score[local_x] = local_score[local_x] + local_score[local_x + i];
+            }
+            __syncthreads();
+        }
+        score[global_x] = local_score[0];
+    }
+}
+
+__global__ void retrieval_kernel_fp16(half **queries, const half *__restrict__ repre_cache, half *__restrict__ score, const int *__restrict__ block_table, const int *__restrict__ batch_index, int dim, int S){
+    extern __shared__ half local_score[]; // num of threads
+    int global_x = blockIdx.x;
+    int local_x = threadIdx.x;
+    if (global_x < S){
+        const half *q = queries[batch_index[global_x]];
+        const half *k = repre_cache + block_table[global_x] * dim;
+        int num_tiles = (dim + 4 * blockDim.x - 1) / (4 * blockDim.x);
+        half sum = 0.0f;
+        for(int i = 0; i < num_tiles; ++i){
+            int tile_offset = i * (4 * blockDim.x);
+            int idx = tile_offset + local_x * 4;
+            if(idx + 4 <= dim){
+                const __half4 *q4 = reinterpret_cast<const __half4*>(q + idx);
+                const __half4 *k4 = reinterpret_cast<const __half4*>(k + idx);
                 sum += q4->x * k4->x + q4->y * k4->y + q4->z * k4->z + q4->w * k4->w;
             }
         }
@@ -102,6 +134,48 @@ void esa_repre(torch::Tensor key_cache, torch::Tensor repre_cache, torch::Tensor
             dim);
     }));
 }
+
+__global__ void retrieval_kernel_bf16(const __nv_bfloat16* bf16_tensor, float* float_tensor, size_t size) {
+    size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+
+    // We process 4 bfloat16 elements per thread in this example (8 bytes total)
+    // Adjust logic if you want to use full float4 (16 bytes) loads for 8 bf16s
+
+    if (tid * 4 + 3 < size) {
+        // 1. Efficiently load two pairs of bfloat16 into __nv_bfloat162 structs.
+        // Reinterpret the pointer to enable a single 32-bit load for two bfloat16s.
+        const __nv_bfloat162* b162_ptr = reinterpret_cast<const __nv_bfloat162*>(bf16_tensor + tid * 4);
+
+        __nv_bfloat162 bf16_pair1 = b162_ptr[0];
+        __nv_bfloat162 bf16_pair2 = b162_ptr[1];
+
+        // 2. Use the intrinsic to convert each pair to float2.
+        float2 f32_pair1 = __bfloat1622float2(bf16_pair1);
+        float2 f32_pair2 = __bfloat1622float2(bf16_pair2);
+
+        // 3. Store the resulting floats (or use them in computation).
+        // If you need a float4, you can construct it like this:
+        // float4 result_f4 = make_float4(f32_pair1.x, f32_pair1.y, f32_pair2.x, f32_pair2.y);
+
+        // Store to output tensor
+        float_tensor[tid * 4] = f32_pair1.x * 2;
+        float_tensor[tid * 4 + 1] = f32_pair1.y * 2;
+        float_tensor[tid * 4 + 2] = f32_pair2.x * 2;
+        float_tensor[tid * 4 + 3] = f32_pair2.y * 2;
+    }
+}
+
+void simple_test(torch::Tensor input, torch::Tensor output){
+    size_t length = input.size(0);
+    size_t numThreads = 32;
+    size_t numBlocks = ((length + numThreads - 1) / numThreads);
+    // NOTE: Do not instantiate ptr directly by "data_ptr<__nv_bfloat16>()"
+    // This will cause " undefined symbol: at10TensorBase8data_ptrI13__nv_bfloat16"
+    auto *input_ptr = reinterpret_cast<const __nv_bfloat16*>(input.data_ptr());
+    auto *output_ptr = reinterpret_cast<float*>(output.data_ptr());
+    retrieval_kernel_bf16<<<numBlocks, numThreads>>>(input_ptr, output_ptr, length);
+}
+
 
 void esa_retrieval(const std::vector<torch::Tensor> &query_list, torch::Tensor repre_cache, torch::Tensor q_index, torch::Tensor repre_index, torch::Tensor score, torch::Tensor score_sorted, torch::Tensor index_ranged, torch::Tensor index_sorted, torch::Tensor batch_offset, torch::Tensor workspace){
     int s = q_index.size(0);
@@ -173,4 +247,5 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     TORCH_BINDING_COMMON_EXTENSION(esa_retrieval)
     TORCH_BINDING_COMMON_EXTENSION(esa_topk)
     TORCH_BINDING_COMMON_EXTENSION(esa_repre)
+    TORCH_BINDING_COMMON_EXTENSION(simple_test)
 }
