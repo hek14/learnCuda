@@ -36,19 +36,20 @@ def print_yellow(msg):
 
 @pytest.mark.parametrize("batch_size", [1, 10])
 @pytest.mark.parametrize("num_repre_blocks", [50, 100])
-@pytest.mark.parametrize("dim", [576, 1024])
-def test_esa_retrieval(batch_size, num_repre_blocks, dim):
+@pytest.mark.parametrize("num_q_heads", [8, 16, 40])
+def test_esa_retrieval(batch_size, num_repre_blocks, num_q_heads):
+    dim = 128
     print(f'''TEST esa_retrieval
 {' '*4}total number of queries (a.k.a batch_size): {batch_size}
 {' '*4}number of key blocks for each request: {num_repre_blocks // batch_size}
-{' '*4}dim (num_heads * hidden_size): {dim}\n''')
+{' '*4}heads: {num_q_heads}\n''')
     N = num_repre_blocks * 2
+    num_k_heads = 8
     query_list = []
     dtype = torch.float32
     for i in range(batch_size):
-        query_list.append(torch.rand(dim, dtype=dtype).cuda())
-    repre_cache = torch.randn(N, dim, dtype = dtype).cuda()
-
+        query_list.append(torch.rand(num_q_heads, dim, dtype=dtype).cuda())
+    repre_cache = torch.randn(N, num_k_heads, dim, dtype = dtype).cuda()
     rng = np.random.default_rng()
     range_n = np.arange(N)
     repre_index = rng.choice(range_n, size=num_repre_blocks, replace=False)
@@ -63,6 +64,7 @@ def test_esa_retrieval(batch_size, num_repre_blocks, dim):
     workspace = torch.zeros(10000, dtype=torch.int32).cuda()
 
     Input = esa_lib.RetrievalInputTensor()
+    Input.num_q_heads = num_q_heads;
     Input.q_ptrs = torch.tensor([q.data_ptr() for q in query_list],
                                 dtype=torch.int64, device='cuda')
     Input.repre_cache = repre_cache
@@ -85,7 +87,9 @@ def test_esa_retrieval(batch_size, num_repre_blocks, dim):
 
     def naive_retrieval():
         query = torch.stack(query_list)
-        score_gt = (query[q_index] * repre_cache[repre_index]).sum(-1)
+        query = query[q_index]
+        key = torch.repeat_interleave(repre_cache[repre_index], num_q_heads//num_k_heads, dim=1)
+        score_gt = (query * key).sum(-1).sum(-1)
         index_gt = torch.cat([ score_gt[s:t].argsort(descending=True) for s,t in zip(batch_offset[:-1], batch_offset[1:]) ])
         return score_gt, index_gt
 
@@ -96,9 +100,9 @@ def test_esa_retrieval(batch_size, num_repre_blocks, dim):
     print_red(f"{' '*4}naive_retrieval host API time: {duration/1e6:.3f} ms")
 
     diff = (score - score_gt).abs()
-    diff_index = (index_sorted - index_gt).abs().to(torch.float32)
     print_blue(f"{' '*4}score diff: {diff.mean():.3f}(mean), {diff.max():.3f}(max)")
-    print_blue(f"{' '*4}index diff: {diff_index.mean():.3f}(mean), {diff_index.max():.3f}(max)")
+    # diff_index = (index_sorted - index_gt).abs().to(torch.float32)
+    # print_blue(f"{' '*4}index diff: {diff_index.mean():.3f}(mean), {diff_index.max():.3f}(max)")
     print("")
 
 

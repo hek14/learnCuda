@@ -30,7 +30,13 @@ namespace py = pybind11;
     } \
 } \
 
-// __device__ __forceinline__ half* convert_to_half(torch::Tensor t){
-//     auto *p = reinterpret_cast<half>(t.data_ptr());
-//     return p;
-// }
+__inline__ __device__ float warpReduceSum(float val)
+{
+    int warpSize = 32;
+    unsigned mask = __activemask();          // ballot of *all* currently active threads
+    for (int offset = warpSize/2; offset > 0; offset /= 2)
+        val += __shfl_down_sync(mask, val, offset);
+    return val;                              // only lane 0 holds the total
+}
+
+constexpr int ceildiv(int a, int b) { return (a + b - 1) / b; }
