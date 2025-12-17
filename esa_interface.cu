@@ -159,11 +159,12 @@ void esa_retrieval(RetrievalInputTensor input, RetrievalOutputTensor output){
 
     dim3 numBlocks = {(unsigned int)s};
     dim3 numThreads = {32, 32};
-
-    float** Q_ptrs = reinterpret_cast<float**>(input.q_ptrs.data_ptr<int64_t>());
-    int numWarps = 1000;
+    int numWarps = ceildiv(numThreads.x * numThreads.y, 32);
     size_t bytes = numWarps * sizeof(float);
-    retrieval_kernel_fp32<<<numBlocks, numThreads, bytes>>>(Q_ptrs, repre_cache.data_ptr<float>(), score.data_ptr<float>(), repre_index.data_ptr<int>(), q_index.data_ptr<int>(), num_q_heads, num_k_heads, dim, s);
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16, repre_cache.scalar_type(), "esa_retrieval_cuda", ([&] {
+        auto* Q_ptrs = reinterpret_cast<scalar_t**>(q_ptrs.data_ptr<int64_t>());
+        retrieval_kernel_fp32<<<numBlocks, numThreads, bytes>>>(Q_ptrs, repre_cache.data_ptr<scalar_t>(), score.data_ptr<scalar_t>(), repre_index.data_ptr<int>(), q_index.data_ptr<int>(), num_q_heads, num_k_heads, dim, s);
+    }));
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {

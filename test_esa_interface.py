@@ -46,7 +46,7 @@ def test_esa_retrieval(batch_size, num_repre_blocks, num_q_heads):
     N = num_repre_blocks * 2
     num_k_heads = 8
     query_list = []
-    dtype = torch.float32
+    dtype = torch.bfloat16
     for i in range(batch_size):
         query_list.append(torch.rand(num_q_heads, dim, dtype=dtype).cuda())
     repre_cache = torch.randn(N, num_k_heads, dim, dtype = dtype).cuda()
@@ -140,3 +140,5 @@ def test_esa_retrieval(batch_size, num_repre_blocks, num_q_heads):
 #     diff = (repre_cache2[repre_index] - repre_cache[repre_index]).abs()
 #     print_blue(f"{' '*4}[esa_repre] repre diff: {diff.mean():.3f}(mean), {diff.max():.3f}(max)")
 #     print("")
+if __name__ == "__main__":
+    test_esa_retrieval(1, 52, 40)
