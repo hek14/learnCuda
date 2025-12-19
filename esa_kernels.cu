@@ -1,4 +1,5 @@
 #include "esa_kernels.h"
+#include <cub/cub.cuh>
 
 __inline__ __device__ float warpReduceSum(float val)
 {

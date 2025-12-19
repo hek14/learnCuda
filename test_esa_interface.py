@@ -8,7 +8,7 @@ torch.set_grad_enabled(False)
 # Load the CUDA kernel as a python module
 esa_lib = load(
     name="esa_interface",
-    sources=["esa_interface.cu", "esa_kernels.cu", "cuda_sm_copy.cu"],
+    sources=["esa_interface.cc", "esa_kernels.cu", "cuda_sm_copy.cu"],
     extra_cflags=["-std=c++17"],
 )
 esa_retrieval = esa_lib.esa_retrieval

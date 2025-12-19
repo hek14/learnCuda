@@ -3,8 +3,6 @@
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
 #include <vector_types.h>
-#include <cub/cub.cuh>
-#include <torch/extension.h>
 #include <pybind11/stl.h>
 #include <vector>
 #include <torch/types.h>

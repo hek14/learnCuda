@@ -1,4 +1,5 @@
 #include <torch/extension.h>
+#include <pybind11/pybind11.h>
 #include "esa_kernels.h"
 #include "cuda_sm_copy.h"
 
@@ -8,7 +9,7 @@ namespace py = pybind11;
 #define TORCH_BINDING_COMMON_EXTENSION(func) \
     m.def(STRINGFY(func), &func, STRINGFY(func))
 
-PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+PYBIND11_MODULE(esa_interface, m) {
     m.doc() = "ESA cuda kernels for block feature extraction and block retrieval";
     py::class_<RetrievalInputTensor>(m, "RetrievalInputTensor")
         .def(py::init<>())
