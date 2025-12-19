@@ -4,6 +4,7 @@
 #include <vector>
 static float** cached_d_ptrs = nullptr;
 static int    cached_batch  = 0;
+static std::vector<float*> cached_host_ptrs = {};
 
 __global__ void add_kernel(float** in, float* out, int n, int batch)
 {
@@ -30,11 +31,12 @@ void launch(std::vector<torch::Tensor> in_tensors, torch::Tensor out)
     dim3 numBlocks = {(size_t)((n + 1024 - 1) / 1024)};
     printf("%d %d\n", n, batch);
     // reuse or initialize cached device pointer array
-    if (cached_batch != batch) {
+    if (cached_batch != batch || ptrs != cached_host_ptrs) {
         if (cached_d_ptrs) cudaFree(cached_d_ptrs);
         cudaMalloc((void**)&cached_d_ptrs, batch * sizeof(float*));
         cudaMemcpy(cached_d_ptrs, ptrs.data(), batch * sizeof(float*), cudaMemcpyHostToDevice);
         cached_batch = batch;
+        cached_host_ptrs = ptrs;
     }
     add_kernel<<<numBlocks, numThreads>>>(cached_d_ptrs, out.data_ptr<float>(), n, batch);
 }
