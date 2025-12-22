@@ -1,5 +1,6 @@
-#include "esa_kernels.h"
 #include <cub/cub.cuh>
+#include <cstddef>
+#include <torch/extension.h>
 
 __inline__ __device__ float warpReduceSum(float val)
 {
@@ -186,61 +187,49 @@ __global__ void retrieval_kernel_bf16(__nv_bfloat16 *__restrict__ queries, __nv_
 }
 
 
-void esa_repre(torch::Tensor key_cache, torch::Tensor repre_cache, torch::Tensor block_table, torch::Tensor repre_table){
-    int block_size = key_cache.size(1);
-    int dim = repre_cache.size(-1);
-    int threads = dim;
-    int blocks = block_table.size(0);
-    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16, key_cache.scalar_type(), "esa_repre_cuda", ([&] {
-                extract_repre<scalar_t><<<blocks, threads>>>(
-                        key_cache.data_ptr<scalar_t>(),
-                        repre_cache.data_ptr<scalar_t>(),
-                        block_table.data_ptr<int>(),
-                        repre_table.data_ptr<int>(),
-                        block_size,
-                        dim);
-                }));
-}
+// extern "C" void esa_repre(torch::Tensor key_cache, torch::Tensor repre_cache, torch::Tensor block_table, torch::Tensor repre_table){
+//     int block_size = key_cache.size(1);
+//     int dim = repre_cache.size(-1);
+//     int threads = dim;
+//     int blocks = block_table.size(0);
+//     AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16, key_cache.scalar_type(), "esa_repre_cuda", ([&] {
+//                 extract_repre<scalar_t><<<blocks, threads>>>(
+//                         key_cache.data_ptr<scalar_t>(),
+//                         repre_cache.data_ptr<scalar_t>(),
+//                         block_table.data_ptr<int>(),
+//                         repre_table.data_ptr<int>(),
+//                         block_size,
+//                         dim);
+//                 }));
+// }
 
-void esa_topk(torch::Tensor score, torch::Tensor index, torch::Tensor offsets, torch::Tensor score_out, torch::Tensor index_out, torch::Tensor workspace){
-    void* temp_workspace = nullptr;
-    size_t temp_bytes = 0;
-    size_t B = offsets.size(0) - 1;
-    size_t total = score.size(0);
-    cub::DeviceSegmentedRadixSort::SortPairsDescending(
-            temp_workspace, temp_bytes,
-            score.data_ptr<float>(),  score_out.data_ptr<float>(),
-            index.data_ptr<int>(), index_out.data_ptr<int>(),
-            total, B, offsets.data_ptr<int>(), offsets.data_ptr<int>() + 1);
-    // NOTE: Don't use malloc, just reuse the workspace, but the first call of
-    // SortPairsDescending is necesssary to determine the workspace size.
-    // CUDA_CHECK(cudaMalloc(&temp_workspace, temp_bytes));
-    temp_workspace = workspace.data_ptr<int>();
-    cub::DeviceSegmentedRadixSort::SortPairsDescending(
-            temp_workspace, temp_bytes,
-            score.data_ptr<float>(),  score_out.data_ptr<float>(),
-            index.data_ptr<int>(), index_out.data_ptr<int>(),
-            total, B, offsets.data_ptr<int>(), offsets.data_ptr<int>() + 1);
-}
+// extern "C" void esa_topk(torch::Tensor score, torch::Tensor index, torch::Tensor offsets, torch::Tensor score_out, torch::Tensor index_out, torch::Tensor workspace){
+//     void* temp_workspace = nullptr;
+//     size_t temp_bytes = 0;
+//     size_t B = offsets.size(0) - 1;
+//     size_t total = score.size(0);
+//     cub::DeviceSegmentedRadixSort::SortPairsDescending(
+//             temp_workspace, temp_bytes,
+//             score.data_ptr<float>(),  score_out.data_ptr<float>(),
+//             index.data_ptr<int>(), index_out.data_ptr<int>(),
+//             total, B, offsets.data_ptr<int>(), offsets.data_ptr<int>() + 1);
+//     // NOTE: Don't use malloc, just reuse the workspace, but the first call of
+//     // SortPairsDescending is necesssary to determine the workspace size.
+//     // CUDA_CHECK(cudaMalloc(&temp_workspace, temp_bytes));
+//     temp_workspace = workspace.data_ptr<int>();
+//     cub::DeviceSegmentedRadixSort::SortPairsDescending(
+//             temp_workspace, temp_bytes,
+//             score.data_ptr<float>(),  score_out.data_ptr<float>(),
+//             index.data_ptr<int>(), index_out.data_ptr<int>(),
+//             total, B, offsets.data_ptr<int>(), offsets.data_ptr<int>() + 1);
+// }
 
-void esa_retrieval(RetrievalInputTensor input, RetrievalOutputTensor output){
-    auto q_ptrs = input.q_ptrs;
-    auto repre_cache = input.repre_cache;
-    auto q_index = input.q_index;
-    auto repre_index = input.repre_index;
-    auto batch_offset = input.batch_offset;
-    auto workspace = input.workspace;
-    auto num_q_heads = input.num_q_heads;
 
-    auto score = output.score;
-    auto score_sorted = output.score_sorted;
-    auto index_ranged = output.index_ranged;
-    auto index_sorted = output.index_sorted;
-
+extern "C" void esa_retrieval_launcher(torch::Tensor q_ptrs, torch::Tensor repre_cache, torch::Tensor q_index, torch::Tensor repre_index, torch::Tensor batch_offset, torch::Tensor workspace, torch::Tensor score, torch::Tensor score_sorted, torch::Tensor index_ranged, torch::Tensor index_sorted, int num_q_heads, int batch_size){
     int s = repre_index.size(0);
     auto num_k_heads = repre_cache.size(1);
     int dim = repre_cache.size(2);
-    int batch = input.batch_size;
+    int batch = batch_size;
     printf("blocks: %d, num_k_heads: %d, num_q_heads: %d, batch: %d, dim: %d\n", s, num_k_heads, num_q_heads, batch, dim);
 
     dim3 numBlocks = {(unsigned int)(s)};
@@ -251,19 +240,19 @@ void esa_retrieval(RetrievalInputTensor input, RetrievalOutputTensor output){
                 if constexpr (std::is_same_v<scalar_t, float>) {
                 retrieval_kernel_fp32<<<numBlocks, numThreads, bytes>>>(reinterpret_cast<float*>(q_ptrs.data_ptr()),
                         reinterpret_cast<float*>(repre_cache.data_ptr()), reinterpret_cast<float*>(score.data_ptr()), repre_index.data_ptr<int>(), q_index.data_ptr<int>(), num_q_heads, num_k_heads, dim, s);
-                // void* temp_workspace = nullptr;
-                // size_t temp_bytes = 0;
-                // cub::DeviceSegmentedRadixSort::SortPairsDescending(
-                //         temp_workspace, temp_bytes,
-                //         score.data_ptr<float>(),  score_sorted.data_ptr<float>(),
-                //         index_ranged.data_ptr<int>(), index_sorted.data_ptr<int>(),
-                //         s, batch, batch_offset.data_ptr<int>(), batch_offset.data_ptr<int>() + 1);
-                // temp_workspace = workspace.data_ptr<int>();
-                // cub::DeviceSegmentedRadixSort::SortPairsDescending(
-                //         temp_workspace, temp_bytes,
-                //         score.data_ptr<float>(),  score_sorted.data_ptr<float>(),
-                //         index_ranged.data_ptr<int>(), index_sorted.data_ptr<int>(),
-                //         s, batch, batch_offset.data_ptr<int>(), batch_offset.data_ptr<int>() + 1);
+                void* temp_workspace = nullptr;
+                size_t temp_bytes = 0;
+                cub::DeviceSegmentedRadixSort::SortPairsDescending(
+                        temp_workspace, temp_bytes,
+                        score.data_ptr<float>(),  score_sorted.data_ptr<float>(),
+                        index_ranged.data_ptr<int>(), index_sorted.data_ptr<int>(),
+                        s, batch, batch_offset.data_ptr<int>(), batch_offset.data_ptr<int>() + 1);
+                temp_workspace = workspace.data_ptr<int>();
+                cub::DeviceSegmentedRadixSort::SortPairsDescending(
+                        temp_workspace, temp_bytes,
+                        score.data_ptr<float>(),  score_sorted.data_ptr<float>(),
+                        index_ranged.data_ptr<int>(), index_sorted.data_ptr<int>(),
+                        s, batch, batch_offset.data_ptr<int>(), batch_offset.data_ptr<int>() + 1);
                 } else if constexpr (std::is_same_v<scalar_t, at::Half>) {
                 retrieval_kernel_fp16<<<numBlocks, numThreads, bytes>>>(reinterpret_cast<__half*>(q_ptrs.data_ptr()),
                         reinterpret_cast<__half*>(repre_cache.data_ptr()), reinterpret_cast<__half*>(score.data_ptr()), repre_index.data_ptr<int>(), q_index.data_ptr<int>(), num_q_heads, num_k_heads, dim, s);

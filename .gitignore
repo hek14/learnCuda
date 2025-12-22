@@ -24,3 +24,4 @@ profile_out.nsys-rep
 profile_out.sqlite
 test_two_stream
 cuda_sm_copy
+*.so

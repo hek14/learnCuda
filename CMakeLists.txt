@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.18)
-project(esa LANGUAGES CXX CUDA)
+project(esa_interface LANGUAGES CXX CUDA)
 find_package(Python COMPONENTS Interpreter Development REQUIRED)
 find_package(pybind11 CONFIG REQUIRED)
 find_package(Torch REQUIRED)   # provides Torch::torch
@@ -27,20 +27,14 @@ target_compile_options(esa_copy_kernels PRIVATE
 
 # ---------- 2.  create the shared module ------------------
 pybind11_add_module(esa_interface
-    esa_interface.cu      # contains PYBIND11_MODULE(esa, m){ ... }
+    esa_interface.cc
 )
+target_include_directories(esa_interface PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${TORCH_INCLUDE_DIRS})
+target_link_libraries(esa_interface PRIVATE esa_kernels esa_copy_kernels  ${TORCH_LIBRARIES} ${CUDA_LIBRARIES})
 
 # ---------- 3.  compile flags -----------------------------
-target_compile_features(esa PRIVATE cxx_std_17)
-set_target_properties(esa PROPERTIES
+target_compile_features(esa_interface PRIVATE cxx_std_17)
+set_target_properties(esa_interface PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON   # needed if kernels call each other
     POSITION_INDEPENDENT_CODE ON    # redundant but explicit
 )
-
-# ---------- 4.  include headers ----------------------------
-target_include_directories(esa PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-
-# ---------- 5.  link libraries -----------------------------
-target_link_libraries(esa PRIVATE ${TORCH_LIBRARIES} ${CUDA_LIBRARIES})
-target_compile_definitions(esa PRIVATE ${TORCH_COMPILE_DEFINITIONS})
-target_include_directories(esa PRIVATE ${TORCH_INCLUDE_DIRS})

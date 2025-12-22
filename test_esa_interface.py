@@ -1,20 +1,120 @@
 import numpy as np
+import os
+import pathlib
+import sysconfig
+import subprocess
 import torch
-from torch.utils.cpp_extension import load
 import pytest
 import time
 
-torch.set_grad_enabled(False)
-# Load the CUDA kernel as a python module
-esa_lib = load(
-    name="esa_interface",
-    sources=["esa_interface.cc", "esa_kernels.cu", "cuda_sm_copy.cu"],
-    extra_cflags=["-std=c++17"],
-)
+def build_shared():
+    # Build interface.so with nvcc using PyTorch headers/libs
+    try:
+        import torch
+        from torch.utils.cpp_extension import include_paths, library_paths
+    except Exception as e:
+        raise SystemExit("PyTorch is required to build with nvcc. Install with: pip install torch") from e
+
+    cuda_home = os.environ.get("CUDA_HOME") or os.environ.get("CUDA_PATH") or "/usr/local/cuda"
+    cuda_inc = os.path.join(cuda_home, "include")
+    cuda_lib = os.path.join(cuda_home, "lib64")
+    if not os.path.isdir(cuda_inc) or not os.path.isdir(cuda_lib):
+        raise SystemExit(f"CUDA not found. Set CUDA_HOME or install to {cuda_home}")
+
+    py_inc = sysconfig.get_paths()["include"]
+
+    # Torch include/library paths
+    t_inc = include_paths()  # e.g., [.../torch/include, .../torch/include/torch/csrc/api/include]
+    t_lib = library_paths()  # e.g., [.../torch/lib]
+
+    # ABI flag must match the one PyTorch was built with
+    cxx11_abi = getattr(torch._C, "_GLIBCXX_USE_CXX11_ABI", 1)
+    abi_macro = f"-D_GLIBCXX_USE_CXX11_ABI={int(cxx11_abi)}"
+
+    print("==== nvcc_compile")
+    cmd = [
+        "nvcc",
+        "-O3",
+        "-std=c++17",
+        "-Xcompiler",
+        "-fPIC",
+        "-shared",
+        "esa_kernels.cu",
+        "esa_interface.cc",
+        # includes
+        "-I" + py_inc,
+        "-I" + cuda_inc,
+        *[f"-I{p}" for p in t_inc],
+        # ABI macro
+        abi_macro,
+        # libs
+        "-L" + cuda_lib,
+        *[f"-L{p}" for p in t_lib],
+        # rpaths so interface.so can find libs at runtime (use -Xlinker for nvcc)
+        "-Xlinker", "-rpath", "-Xlinker", cuda_lib,
+        *[arg for p in t_lib for arg in ("-Xlinker", "-rpath", "-Xlinker", p)],
+        # link against torch and CUDA runtime
+        "-lc10",
+        "-lc10_cuda",
+        "-ltorch_cpu",
+        "-ltorch_cuda",
+        "-ltorch",
+        "-ltorch_python",
+        "-lcudart",
+        "-o",
+        "esa_interface.so",
+    ]
+    print("Building interface.so with:", " ".join(cmd))
+    subprocess.run(cmd, check=True)
+
+def load_module():
+    """
+    Load the CUDA extension.
+
+    Preference order:
+    1. If USE_TORCH_EXTENSION=1 (default) and torch is available, build/load via torch.utils.cpp_extension.load.
+    2. Otherwise, build a local interface.so with nvcc and load it from disk.
+    """
+    use_torch = os.environ.get("USE_TORCH_EXTENSION", "0") == "1"
+    if use_torch:
+        print("==== torch_compile")
+        try:
+            import torch
+            from torch.utils.cpp_extension import load as torch_load
+            # torch ships pybind11 headers and handles the build toolchain
+            mod = torch_load(
+                name="interface",
+                sources=["esa_interface.cc", "esa_kernels.cu"],
+                extra_cflags=["-O3", "-std=c++17"],
+                extra_cuda_cflags=["-O3"],
+                verbose=True,
+            )
+            return mod
+        except Exception as e:
+            print(f"[warn] torch extension build failed, falling back to nvcc: {e}")
+
+    so_path = pathlib.Path(__file__).with_name("esa_interface.so")
+    if not so_path.exists():
+        build_shared()
+
+    # import importlib.machinery
+    # import importlib.util
+    # # Load the extension from an explicit path without modifying sys.path
+    # loader = importlib.machinery.ExtensionFileLoader("interface", str(so_path))
+    # spec = importlib.util.spec_from_loader(loader.name, loader)
+    # if spec is None:
+    #     raise RuntimeError("Failed to create spec for interface.so")
+    # module = importlib.util.module_from_spec(spec)
+    # loader.exec_module(module)
+    import esa_interface as module
+    return module
+
+
+esa_lib = load_module()
 esa_retrieval = esa_lib.esa_retrieval
-esa_topk = esa_lib.esa_topk
-esa_repre = esa_lib.esa_repre
-esa_copy = esa_lib.esa_copy
+# esa_topk = esa_lib.esa_topk
+# esa_repre = esa_lib.esa_repre
+# esa_copy = esa_lib.esa_copy
 
 class style():
     RED = '\033[31m'
@@ -46,7 +146,7 @@ def test_esa_retrieval(batch_size, num_repre_blocks, num_q_heads):
     total_blocks = num_repre_blocks * batch_size
     N = total_blocks * 2
     num_k_heads = 8
-    dtype = torch.bfloat16
+    dtype = torch.float32
     query = torch.randn(batch_size, num_q_heads, dim, dtype=dtype).cuda()
     repre_cache = torch.randn(N, num_k_heads, dim, dtype = dtype).cuda()
     rng = np.random.default_rng()
@@ -97,9 +197,11 @@ def test_esa_retrieval(batch_size, num_repre_blocks, num_q_heads):
     print_red(f"{' '*4}batch_offset {batch_offset}")
 
     def naive_retrieval():
-        query_batched = query[q_index]
-        key = torch.repeat_interleave(repre_cache[repre_index], num_q_heads//num_k_heads, dim=1)
-        score_gt = (query_batched * key).sum(-1).sum(-1)
+        query_batched = query[q_index].to(torch.float32)
+        key = torch.repeat_interleave(repre_cache[repre_index],
+                                      num_q_heads//num_k_heads,
+                                      dim=1).to(torch.float32)
+        score_gt = (query_batched * key).sum(-1).sum(-1).to(dtype)
         index_gt = torch.cat([ score_gt[s:t].argsort(descending=True) for s,t in zip(batch_offset[:-1], batch_offset[1:]) ])
         return score_gt, index_gt
 
