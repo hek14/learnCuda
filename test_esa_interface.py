@@ -158,8 +158,7 @@ def test_esa_retrieval(batch_size, num_repre_blocks, num_q_heads):
     q_index = torch.randint(0, batch_size, size = [total_blocks], dtype = torch.int32).cuda()
     score = torch.zeros(total_blocks, dtype = dtype).cuda()
     score_sorted = torch.zeros(total_blocks, dtype = dtype).cuda()
-    index_ranged = torch.cat([torch.arange(0, num_repre_blocks) for _ in
-                              range(batch_size)]).to(torch.int32).cuda()
+
     index_sorted = torch.arange(0, total_blocks, dtype=torch.int32).cuda()
     batch_offset = []
     for i in range(batch_size + 1):
@@ -170,13 +169,12 @@ def test_esa_retrieval(batch_size, num_repre_blocks, num_q_heads):
     #                          dtype=torch.int64, pin_memory=True)
     # ptrs_dev = torch.zeros(batch_size, dtype=torch.int64, device="cuda")
     # size = ptrs_host.numel() * ptrs_host.element_size()
+    # Input.q_ptrs = ptrs_dev
     # esa_copy(ptrs_host, ptrs_dev, size) # then we use ptrs_dev as the input of esa_retrieval
 
     Input = esa_lib.RetrievalInputTensor()
-    Input.num_q_heads = num_q_heads;
-    Input.batch_size = batch_size;
-    Input.q_ptrs = query
-    # Input.q_ptrs = ptrs_dev
+
+    Input.query = query
     Input.repre_cache = repre_cache
     Input.q_index = q_index
     Input.repre_index = repre_index
@@ -185,8 +183,8 @@ def test_esa_retrieval(batch_size, num_repre_blocks, num_q_heads):
 
     Output = esa_lib.RetrievalOutputTensor()
     Output.score = score
+    Output.index = repre_index
     Output.score_sorted = score_sorted
-    Output.index_ranged = index_ranged
     Output.index_sorted = index_sorted
 
     start = time.perf_counter_ns()
@@ -201,7 +199,7 @@ def test_esa_retrieval(batch_size, num_repre_blocks, num_q_heads):
                                       num_q_heads//num_k_heads,
                                       dim=1).to(torch.float32)
         score_gt = (query_batched * key).sum(-1).sum(-1).to(dtype)
-        index_gt = torch.cat([ score_gt[s:t].argsort(descending=True) for s,t in zip(batch_offset[:-1], batch_offset[1:]) ])
+        index_gt = torch.cat([ repre_index[s:t][score_gt[s:t].argsort(descending=True)] for s,t in zip(batch_offset[:-1], batch_offset[1:]) ])
         return score_gt, index_gt
 
     start = time.perf_counter_ns()
@@ -280,7 +278,8 @@ def test_esa_copy():# extract repre
     assert diff.max() < 1e-5
 
 
-# if __name__ == "__main__":
+if __name__ == "__main__":
+    test_esa_retrieval(2, 50, 40)
 #     a = torch.randn(1000, 1000, dtype=torch.float32, device="cuda")
 #     b = torch.randn(1000, 1000, dtype=torch.float32, device="cuda")
 #     c = torch.randn(1000, 1000, dtype=torch.float32, device="cuda")

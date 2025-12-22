@@ -225,11 +225,12 @@ extern "C" void esa_topk(torch::Tensor score, torch::Tensor index, torch::Tensor
 }
 
 
-extern "C" void esa_retrieval_launcher(torch::Tensor q_ptrs, torch::Tensor repre_cache, torch::Tensor q_index, torch::Tensor repre_index, torch::Tensor batch_offset, torch::Tensor workspace, torch::Tensor score, torch::Tensor score_sorted, torch::Tensor index_ranged, torch::Tensor index_sorted, int num_q_heads, int batch_size){
+extern "C" void esa_retrieval_launcher(torch::Tensor query, torch::Tensor repre_cache, torch::Tensor q_index, torch::Tensor repre_index, torch::Tensor batch_offset, torch::Tensor workspace, torch::Tensor score, torch::Tensor score_sorted, torch::Tensor index, torch::Tensor index_sorted){
     int s = repre_index.size(0);
-    auto num_k_heads = repre_cache.size(1);
+    int num_k_heads = repre_cache.size(1);
+    int num_q_heads = query.size(1);
     int dim = repre_cache.size(2);
-    int batch = batch_size;
+    int batch = batch_offset.size(0) - 1;
 
     dim3 numBlocks = {(unsigned int)(s)};
     dim3 numThreads = {32, 32};
@@ -237,23 +238,23 @@ extern "C" void esa_retrieval_launcher(torch::Tensor q_ptrs, torch::Tensor repre
     size_t bytes = numWarps * sizeof(float);
     AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16, repre_cache.scalar_type(), "esa_retrieval_cuda", ([&] {
                 if constexpr (std::is_same_v<scalar_t, float>) {
-                retrieval_kernel_fp32<<<numBlocks, numThreads, bytes>>>(reinterpret_cast<float*>(q_ptrs.data_ptr()),
+                retrieval_kernel_fp32<<<numBlocks, numThreads, bytes>>>(reinterpret_cast<float*>(query.data_ptr()),
                         reinterpret_cast<float*>(repre_cache.data_ptr()), reinterpret_cast<float*>(score.data_ptr()), repre_index.data_ptr<int>(), q_index.data_ptr<int>(), num_q_heads, num_k_heads, dim, s);
                 void* temp_workspace = nullptr;
                 size_t temp_bytes = 0;
                 cub::DeviceSegmentedRadixSort::SortPairsDescending(
                         temp_workspace, temp_bytes,
                         score.data_ptr<float>(),  score_sorted.data_ptr<float>(),
-                        index_ranged.data_ptr<int>(), index_sorted.data_ptr<int>(),
+                        index.data_ptr<int>(), index_sorted.data_ptr<int>(),
                         s, batch, batch_offset.data_ptr<int>(), batch_offset.data_ptr<int>() + 1);
                 temp_workspace = workspace.data_ptr<int>();
                 cub::DeviceSegmentedRadixSort::SortPairsDescending(
                         temp_workspace, temp_bytes,
                         score.data_ptr<float>(),  score_sorted.data_ptr<float>(),
-                        index_ranged.data_ptr<int>(), index_sorted.data_ptr<int>(),
+                        index.data_ptr<int>(), index_sorted.data_ptr<int>(),
                         s, batch, batch_offset.data_ptr<int>(), batch_offset.data_ptr<int>() + 1);
                 } else if constexpr (std::is_same_v<scalar_t, at::Half>) {
-                retrieval_kernel_fp16<<<numBlocks, numThreads, bytes>>>(reinterpret_cast<__half*>(q_ptrs.data_ptr()),
+                retrieval_kernel_fp16<<<numBlocks, numThreads, bytes>>>(reinterpret_cast<__half*>(query.data_ptr()),
                         reinterpret_cast<__half*>(repre_cache.data_ptr()), reinterpret_cast<__half*>(score.data_ptr()), repre_index.data_ptr<int>(), q_index.data_ptr<int>(), num_q_heads, num_k_heads, dim, s);
                 void* temp_workspace = nullptr;
                 size_t temp_bytes = 0;
@@ -261,17 +262,17 @@ extern "C" void esa_retrieval_launcher(torch::Tensor q_ptrs, torch::Tensor repre
                         temp_workspace, temp_bytes,
                         reinterpret_cast<__half*>(score.data_ptr()),
                         reinterpret_cast<__half*>(score_sorted.data_ptr()),
-                        index_ranged.data_ptr<int>(), index_sorted.data_ptr<int>(),
+                        index.data_ptr<int>(), index_sorted.data_ptr<int>(),
                         s, batch, batch_offset.data_ptr<int>(), batch_offset.data_ptr<int>() + 1);
                 temp_workspace = workspace.data_ptr<int>();
                 cub::DeviceSegmentedRadixSort::SortPairsDescending(
                         temp_workspace, temp_bytes,
                         reinterpret_cast<__half*>(score.data_ptr()),
                         reinterpret_cast<__half*>(score_sorted.data_ptr()),
-                        index_ranged.data_ptr<int>(), index_sorted.data_ptr<int>(),
+                        index.data_ptr<int>(), index_sorted.data_ptr<int>(),
                         s, batch, batch_offset.data_ptr<int>(), batch_offset.data_ptr<int>() + 1);
                 } else if constexpr (std::is_same_v<scalar_t, at::BFloat16>) {
-                    retrieval_kernel_bf16<<<numBlocks, numThreads, bytes>>>(reinterpret_cast<__nv_bfloat16*>(q_ptrs.data_ptr()),
+                    retrieval_kernel_bf16<<<numBlocks, numThreads, bytes>>>(reinterpret_cast<__nv_bfloat16*>(query.data_ptr()),
                             reinterpret_cast<__nv_bfloat16*>(repre_cache.data_ptr()), reinterpret_cast<__nv_bfloat16*>(score.data_ptr()), repre_index.data_ptr<int>(), q_index.data_ptr<int>(), num_q_heads, num_k_heads, dim, s);
                     void* temp_workspace = nullptr;
                     size_t temp_bytes = 0;
@@ -279,14 +280,14 @@ extern "C" void esa_retrieval_launcher(torch::Tensor q_ptrs, torch::Tensor repre
                             temp_workspace, temp_bytes,
                             reinterpret_cast<__nv_bfloat16*>(score.data_ptr()),
                             reinterpret_cast<__nv_bfloat16*>(score_sorted.data_ptr()),
-                            index_ranged.data_ptr<int>(), index_sorted.data_ptr<int>(),
+                            index.data_ptr<int>(), index_sorted.data_ptr<int>(),
                             s, batch, batch_offset.data_ptr<int>(), batch_offset.data_ptr<int>() + 1);
                     temp_workspace = workspace.data_ptr<int>();
                     cub::DeviceSegmentedRadixSort::SortPairsDescending(
                             temp_workspace, temp_bytes,
                             reinterpret_cast<__nv_bfloat16*>(score.data_ptr()),
                             reinterpret_cast<__nv_bfloat16*>(score_sorted.data_ptr()),
-                            index_ranged.data_ptr<int>(), index_sorted.data_ptr<int>(),
+                            index.data_ptr<int>(), index_sorted.data_ptr<int>(),
                             s, batch, batch_offset.data_ptr<int>(), batch_offset.data_ptr<int>() + 1);
                 }
     }));
