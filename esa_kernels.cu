@@ -241,6 +241,21 @@ extern "C" void esa_repre(torch::Tensor key_cache, torch::Tensor repre_cache, to
     TORCH_CHECK(key_cache.is_contiguous(), "key_cache must be contiguous");
     TORCH_CHECK(repre_cache.is_contiguous(), "repre_cache must be contiguous");
 
+    // Shape validations based on expected contract:
+    // key_cache: [N, block_size, dim], repre_cache: [M, dim]
+    TORCH_CHECK(key_cache.dim() == 3, "key_cache must be 3D [N, block_size, dim]");
+    TORCH_CHECK(repre_cache.dim() == 2, "repre_cache must be 2D [M, dim]");
+    TORCH_CHECK(block_table.dim() == 1 && repre_table.dim() == 1, "block_table and repre_index must be 1-D");
+    TORCH_CHECK(block_table.size(0) == repre_table.size(0), "block_table and repre_index must have the same length");
+
+    // Indices must be int32 on device and contiguous for the kernel
+    if (block_table.scalar_type() != at::kInt || !block_table.is_contiguous()) {
+        block_table = block_table.to(at::kInt).contiguous();
+    }
+    if (repre_table.scalar_type() != at::kInt || !repre_table.is_contiguous()) {
+        repre_table = repre_table.to(at::kInt).contiguous();
+    }
+
     int block_size = key_cache.size(1);
     int dim = repre_cache.size(-1);
     int num_blocks = block_table.size(0);
