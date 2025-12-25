@@ -387,12 +387,13 @@ std::thread w_thread;
 static cudaStream_t g_cb_stream = nullptr;
 
 /* Dedicated non-blocking compute stream managed by PyTorch to avoid legacy-default-stream implicit sync */
-static at::cuda::CUDAStream g_comp_stream;
+static std::unique_ptr<c10::cuda::CUDAStream> g_comp_stream;
 static bool g_comp_stream_inited = false;
 
 inline void ensure_comp_stream() {
     if (!g_comp_stream_inited) {
-        g_comp_stream = at::cuda::getStreamFromPool(/* isHighPriority = */ false);
+        auto s = at::cuda::getStreamFromPool(/* isHighPriority = */ false);
+        g_comp_stream = std::make_unique<c10::cuda::CUDAStream>(s);
         g_comp_stream_inited = true;
     }
 }
@@ -561,13 +562,13 @@ extern "C" int esa_retrieval_launcher(torch::Tensor query, torch::Tensor repre_c
     cudaEvent_t ev_in;
     cudaEventCreateWithFlags(&ev_in, cudaEventDisableTiming);
     cudaEventRecord(ev_in, cur_stream);
-    cudaStreamWaitEvent(g_comp_stream.stream(), ev_in, 0);
+    cudaStreamWaitEvent(g_comp_stream->stream(), ev_in, 0);
     cudaEventDestroy(ev_in);
 
     NVTX_PUSH("esa_retrieval: kernel");
     AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16, repre_cache.scalar_type(), "esa_retrieval_cuda", ([&] {
         if constexpr (std::is_same_v<scalar_t, float>) {
-            retrieval_kernel_fp32<<<numBlocks, numThreads, bytes, g_comp_stream.stream()>>>(
+            retrieval_kernel_fp32<<<numBlocks, numThreads, bytes, g_comp_stream->stream()>>>(
                 reinterpret_cast<float*>(query.data_ptr()),
                 reinterpret_cast<float*>(repre_cache.data_ptr()),
                 reinterpret_cast<float*>(score.data_ptr()),
@@ -575,7 +576,7 @@ extern "C" int esa_retrieval_launcher(torch::Tensor query, torch::Tensor repre_c
                 q_index.data_ptr<int>(),
                 num_q_heads, num_k_heads, dim, s);
         } else if constexpr (std::is_same_v<scalar_t, at::Half>) {
-            retrieval_kernel_fp16<<<numBlocks, numThreads, bytes, g_comp_stream.stream()>>>(
+            retrieval_kernel_fp16<<<numBlocks, numThreads, bytes, g_comp_stream->stream()>>>(
                 reinterpret_cast<__half*>(query.data_ptr()),
                 reinterpret_cast<__half*>(repre_cache.data_ptr()),
                 reinterpret_cast<__half*>(score.data_ptr()),
@@ -583,7 +584,7 @@ extern "C" int esa_retrieval_launcher(torch::Tensor query, torch::Tensor repre_c
                 q_index.data_ptr<int>(),
                 num_q_heads, num_k_heads, dim, s);
         } else if constexpr (std::is_same_v<scalar_t, at::BFloat16>) {
-            retrieval_kernel_bf16<<<numBlocks, numThreads, bytes, g_comp_stream.stream()>>>(
+            retrieval_kernel_bf16<<<numBlocks, numThreads, bytes, g_comp_stream->stream()>>>(
                 reinterpret_cast<__nv_bfloat16*>(query.data_ptr()),
                 reinterpret_cast<__nv_bfloat16*>(repre_cache.data_ptr()),
                 reinterpret_cast<__nv_bfloat16*>(score.data_ptr()),
@@ -597,7 +598,7 @@ extern "C" int esa_retrieval_launcher(torch::Tensor query, torch::Tensor repre_c
     // Copy scores to pinned CPU using SM-copy kernel (must use current stream internally).
     // Make esa_copy run on our private compute stream by guarding the current stream.
     size_t score_bytes = static_cast<size_t>(s) * static_cast<size_t>(score.element_size());
-    { at::cuda::CUDAStreamGuard guard(g_comp_stream);
+    { c10::cuda::CUDAStreamGuard guard(*g_comp_stream);
       NVTX_PUSH("esa_retrieval: esa_copy score->cpu");
       esa_copy(score, score_cpu, score_bytes);
       NVTX_POP();
@@ -626,7 +627,7 @@ extern "C" int esa_retrieval_launcher(torch::Tensor query, torch::Tensor repre_c
     NVTX_PUSH("esa_retrieval: record_event");
     cudaEvent_t ev;
     cudaEventCreateWithFlags(&ev, cudaEventDisableTiming);
-    cudaEventRecord(ev, g_comp_stream.stream());
+    cudaEventRecord(ev, g_comp_stream->stream());
     NVTX_POP();
 
     NVTX_PUSH("esa_retrieval: host_callback_enqueue");
