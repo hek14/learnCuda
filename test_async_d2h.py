@@ -31,16 +31,15 @@ def main():
     host_buffers.append(host_out)
 
 
-    q = torch.randn(N, D, device=device, dtype=torch.float32)
-    k = torch.randn(N, D, device=device, dtype=torch.float32)
-    host_out = torch.empty(N, dtype=torch.float32, device="cpu", pin_memory=True)
-
-    torch.cuda.synchronize()
-    time.sleep(0.5)
     # Launch loop without synchronizing after D2H
     start = time.time()
     for t in range(iters):
         nvtx.range_push(f"iter_{t:02d}")
+
+        # Create fresh inputs and a dedicated pinned output buffer per iteration to avoid aliasing
+        q = torch.randn(N, D, device=device, dtype=torch.float32)
+        k = torch.randn(N, D, device=device, dtype=torch.float32)
+        host_out = torch.empty(N, dtype=torch.float32, device="cpu", pin_memory=True)
 
         nvtx.range_push("enqueue_launch_async")
         t0 = time.time()
@@ -66,7 +65,8 @@ def main():
     nvtx.range_push("polling_for_results")
     remaining = set(handles)
     results = {}
-    while remaining:
+    deadline = time.time() + 30.0
+    while remaining and time.time() < deadline:
         done = []
         for h in list(remaining):
             ready, idx, val = async_ext.poll(h)
@@ -78,6 +78,11 @@ def main():
             async_ext.cleanup(h)
         # Sleep a bit to avoid busy waiting
         time.sleep(0.001)
+    if remaining:
+        print(f"Timeout waiting for {len(remaining)} handles; cleaning up remaining.")
+        for h in list(remaining):
+            async_ext.cleanup(h)
+        remaining.clear()
     nvtx.range_pop()
 
     print(f"All callbacks finished. Collected {len(results)} results.")

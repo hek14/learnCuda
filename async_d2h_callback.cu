@@ -40,6 +40,8 @@ struct Context {
     float* host_ptr;
     torch::Tensor host_tensor_keepalive;   // pinned CPU buffer (destination of D2H)
     torch::Tensor device_out_keepalive;    // device buffer for scores
+    torch::Tensor q_keepalive;             // keep input alive
+    torch::Tensor k_keepalive;             // keep input alive
 
     Context() : ready(0), result_idx(-1), result_val(std::numeric_limits<float>::infinity()), N(0), host_ptr(nullptr) {}
 };
@@ -151,6 +153,8 @@ int launch_async(torch::Tensor q, torch::Tensor k, torch::Tensor host_out) {
     ctx->host_tensor_keepalive = host_out;  // pin lifetime
     ctx->device_out_keepalive = score_d;    // pin lifetime
     ctx->host_ptr = host_out.data_ptr<float>();
+    ctx->q_keepalive = q_contig;            // keep inputs alive until stream work finishes
+    ctx->k_keepalive = k_contig;
 
     int handle;
     {
@@ -175,6 +179,8 @@ int launch_async(torch::Tensor q, torch::Tensor k, torch::Tensor host_out) {
         static_cast<int>(N),
         static_cast<int>(D)
     );
+    cudaError_t kernStatus = cudaPeekAtLastError();
+    TORCH_CHECK(kernStatus == cudaSuccess, "row_dot_f32 launch failed: ", cudaGetErrorString(kernStatus));
     nvtxRangePop();
 
     // Enqueue async D2H
