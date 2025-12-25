@@ -1,6 +1,18 @@
 #include <cub/cub.cuh>
 #include <cstddef>
 #include <torch/extension.h>
+#include <ATen/cuda/CUDAContext.h>
+#include <cuda_runtime.h>
+
+#include <atomic>
+#include <unordered_map>
+#include <mutex>
+#include <memory>
+#include <thread>
+#include <condition_variable>
+#include <deque>
+#include <vector>
+#include <algorithm>
 
 __inline__ __device__ float warpReduceSum(float val)
 {
