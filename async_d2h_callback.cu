@@ -42,8 +42,9 @@ struct Context {
     torch::Tensor device_out_keepalive;    // device buffer for scores
     torch::Tensor q_keepalive;             // keep input alive
     torch::Tensor k_keepalive;             // keep input alive
+    cudaEvent_t ready_event;               // event signaling D2H completion
 
-    Context() : ready(0), result_idx(-1), result_val(std::numeric_limits<float>::infinity()), N(0), host_ptr(nullptr) {}
+    Context() : ready(0), result_idx(-1), result_val(std::numeric_limits<float>::infinity()), N(0), host_ptr(nullptr), ready_event(nullptr) {}
 };
 
 std::mutex g_mutex;
@@ -57,6 +58,15 @@ std::deque<Context*> w_queue;
 std::atomic<bool> w_started{false};
 std::atomic<bool> w_running{false};
 std::thread w_thread;
+
+// Dedicated callback stream to avoid blocking the compute stream with host callbacks.
+static cudaStream_t g_cb_stream = nullptr;
+
+inline void ensure_callback_stream() {
+    if (g_cb_stream == nullptr) {
+        cudaStreamCreateWithFlags(&g_cb_stream, cudaStreamNonBlocking);
+    }
+}
 
 void worker_loop() {
     // Optional marker that the worker thread started.
@@ -116,6 +126,11 @@ void enqueue_job(Context* ctx) {
 void CUDART_CB host_callback(void* userData) {
     nvtxRangePushA("host_callback_enqueue");
     Context* ctx = reinterpret_cast<Context*>(userData);
+    // Destroy the event now that the callback stream has waited on it.
+    if (ctx->ready_event) {
+        cudaEventDestroy(ctx->ready_event);
+        ctx->ready_event = nullptr;
+    }
     // Defer heavy work to a standalone CPU worker thread to avoid blocking CUDA driver threads.
     enqueue_job(ctx);
     nvtxRangePop();
@@ -195,9 +210,21 @@ int launch_async(torch::Tensor q, torch::Tensor k, torch::Tensor host_out) {
     TORCH_CHECK(memStatus == cudaSuccess, "cudaMemcpyAsync failed: ", cudaGetErrorString(memStatus));
     nvtxRangePop();
 
-    // Enqueue host callback
-    nvtxRangePushA("enqueue: host_callback");
-    cudaError_t cbStatus = cudaLaunchHostFunc(stream, host_callback, ctx_ref.get());
+    // Record event on compute stream and enqueue host callback on dedicated callback stream
+    nvtxRangePushA("enqueue: record_event_for_host_callback");
+    cudaEvent_t ev;
+    cudaError_t evCreateStatus = cudaEventCreateWithFlags(&ev, cudaEventDisableTiming);
+    TORCH_CHECK(evCreateStatus == cudaSuccess, "cudaEventCreateWithFlags failed: ", cudaGetErrorString(evCreateStatus));
+    cudaError_t evRecordStatus = cudaEventRecord(ev, stream);
+    TORCH_CHECK(evRecordStatus == cudaSuccess, "cudaEventRecord failed: ", cudaGetErrorString(evRecordStatus));
+    ctx_ref->ready_event = ev;
+    nvtxRangePop();
+
+    nvtxRangePushA("enqueue: host_callback(cb_stream)");
+    ensure_callback_stream();
+    cudaError_t waitStatus = cudaStreamWaitEvent(g_cb_stream, ev, 0);
+    TORCH_CHECK(waitStatus == cudaSuccess, "cudaStreamWaitEvent failed: ", cudaGetErrorString(waitStatus));
+    cudaError_t cbStatus = cudaLaunchHostFunc(g_cb_stream, host_callback, ctx_ref.get());
     TORCH_CHECK(cbStatus == cudaSuccess, "cudaLaunchHostFunc failed: ", cudaGetErrorString(cbStatus));
     nvtxRangePop();
 
@@ -245,6 +272,10 @@ void shutdown_worker() {
             w_thread.join();
         }
         w_started.store(false, std::memory_order_release);
+    }
+    if (g_cb_stream != nullptr) {
+        cudaStreamDestroy(g_cb_stream);
+        g_cb_stream = nullptr;
     }
 }
 
