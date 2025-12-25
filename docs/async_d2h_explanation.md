@@ -1,3 +1,5 @@
+TL;DR: Yes — a CUDA stream is an ordered work queue. If you enqueue cudaLaunchHostFunc on the same stream as your kernel/memcpy, the callback is ordered with them, so the stream can’t progress to the next iteration until the host callback returns. By recording an event on the compute stream and launching the callback on a separate non-blocking stream that waits on that event, we keep the dependency but remove the serialization, allowing GPU work of iteration t+1 to overlap with the host processing from iteration t.
+
 Why the previous version didn’t overlap and why this one does
 
 Problem in the earlier design
