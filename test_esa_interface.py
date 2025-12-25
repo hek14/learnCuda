@@ -140,20 +140,31 @@ def test_esa_retrieval(batch_size, num_repre_blocks, num_q_heads):
     Output.score_sorted_cpu = score_sorted_cpu
     Output.index_sorted_cpu = index_sorted_cpu
 
+    def _wait(h):
+        deadline = time.time() + 30.0
+        while time.time() < deadline:
+            ready = esa_retrieval_poll(h)
+            if ready == 1:
+                break
+            time.sleep(1 / 1e6)
+        assert esa_retrieval_cleanup(h) == 1
+
+    # warmup a little bit
+    for i in range(5):
+        handle = esa_retrieval(Input, Output)
+        _wait(handle)
+
+    iters = 10
+    handles = []
+
     start = time.perf_counter_ns()
-    for i in range(10):
-        with nvtx.range(f"retrieval_{i}"):
-            handle = esa_retrieval(Input, Output)
-    # Poll asynchronously for CPU argsort completion; do not force device sync
-    deadline = time.time() + 30.0
-    while time.time() < deadline:
-        ready = esa_retrieval_poll(handle)
-        if ready == 1:
-            break
-        time.sleep(1 / 1e6)
-    assert esa_retrieval_cleanup(handle) == 1
+    for i in range(iters):
+        with nvtx.range(f"esa_{i}"):
+            handles.append(esa_retrieval(Input, Output))
+    for h in handles:
+        _wait(h)
     duration = time.perf_counter_ns() - start
-    print_green(f"{' '*4}esa_retrieval host API time (enqueue + async completion): {duration/1e6:.3f} ms")
+    print_green(f"{' '*4}esa_retrieval host API time (enqueue + async completion): {duration/1e6/iters:.3f} ms")
 
     def naive_retrieval():
         query_batched = query[q_index].to(torch.float32)
